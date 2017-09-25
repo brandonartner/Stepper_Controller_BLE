@@ -38,14 +38,17 @@ BLEPeripheral blePeripheral; // create BLE peripheral instance
 BLEService stepperService("19B10000-E8F2-537E-4F6C-D104768A1214"); // create BLE service
 
 // create characteristic for stepper rpm and allow remote device to read and write
+// The UUID is pretty arbitrary, the first part is the device id though
 BLEIntCharacteristic stepperRPM("19B10001-E8F2-537E-4F6C-D104768A1215", BLERead | BLEWrite);
 
 // create characteristic for the ramping speed and allow remote device to read and write
+// The UUID is pretty arbitrary, the first part is the device id though
 BLEIntCharacteristic rampingSpeed("19B10002-E8F2-537E-4F6C-D104768A1215", BLERead | BLEWrite);
 
 // initialize the stepper library on pins 8 through 11:
 Stepper myStepper(STEPS_PER_REVOLUTION, 8, 9, 10, 11);	
 
+// Not exactly rpm, depends on how many steps per rotation is set at. If set to the motor's specs then it is true rpms.
 int rpm = 0;
 
 
@@ -55,94 +58,108 @@ int rpm = 0;
 void setup()
 {
   
-  // initialize the speed at 0 rpm
-  myStepper.setSpeed(0);
-  
-  //start serial communication
-  Serial.begin(9600);
-  
-  // set the local name peripheral advertises
-  blePeripheral.setLocalName("STEPCB");
-  // set the UUID for the service this peripheral advertises
-  blePeripheral.setAdvertisedServiceUuid(stepperService.uuid());
+	// initialize the speed at 0 rpm
+	myStepper.setSpeed(0);
 
-  // add service and characteristic
-  blePeripheral.addAttribute(stepperService);
-  blePeripheral.addAttribute(stepperRPM);
-  blePeripheral.addAttribute(rampingSpeed);
+	//start serial communication
+	Serial.begin(9600);
 
-  // assign event handlers for connected, disconnected to peripheral
-  blePeripheral.setEventHandler(BLEConnected, blePeripheralConnectHandler);
-  blePeripheral.setEventHandler(BLEDisconnected, blePeripheralDisconnectHandler);
+	// set the local name peripheral advertises
+	blePeripheral.setLocalName("STEPCB");
+	// set the UUID for the service this peripheral advertises
+	blePeripheral.setAdvertisedServiceUuid(stepperService.uuid());
 
-  // assign event handlers for characteristic
-  stepperRPM.setEventHandler(BLEWritten, stepperRPMWritten);
-  
-  // assign event handlers for characteristic
-  stepperRPM.setEventHandler(BLEWritten, stepperRPMWritten);
-  
-  // set an initial value for the characteristic
-  stepperRPM.setValue(0);
-  rampingSpeed.setValue(100);
-  
-  // advertise the service
-  blePeripheral.begin();
-  Serial.println(("Bluetooth device active, waiting for connections..."));
+	// add service and characteristic
+	blePeripheral.addAttribute(stepperService);
+	blePeripheral.addAttribute(stepperRPM);
+	blePeripheral.addAttribute(rampingSpeed);
+
+	// assign event handlers for connected, disconnected to peripheral
+	blePeripheral.setEventHandler(BLEConnected, blePeripheralConnectHandler);
+	blePeripheral.setEventHandler(BLEDisconnected, blePeripheralDisconnectHandler);
+
+	// assign event handlers for characteristic
+	stepperRPM.setEventHandler(BLEWritten, stepperRPMWritten);
+
+	// assign event handlers for characteristic
+	stepperRPM.setEventHandler(BLEWritten, stepperRPMWritten);
+
+	// set an initial value for the characteristic
+	stepperRPM.setValue(0);
+	rampingSpeed.setValue(100);
+
+	// advertise the service
+	blePeripheral.begin();
+	Serial.println(("Bluetooth device active, waiting for connections..."));
 }
 
 //**********
 // Main Loop
 //**********
 void loop() {
-  // poll peripheral
-  blePeripheral.poll();
+	// poll peripheral
+	blePeripheral.poll();
 
-  // If the current rpm is less than desired rpm increase by 100
-  if(rpm<stepperRPM.value()){
-    rpm+=rampingSpeed.value();
-    myStepper.setSpeed(rpm);
-    Serial.print("clockwise,rpm: ");
-    Serial.println(rpm);
-  }
-  if(rpm>stepperRPM.value()){
-	rpm = stepperRPM.value();
-  }
-  // Don't run if rpm is 0, will cause program to hang
-  if(stepperRPM.value() != 0)
-    myStepper.step(STEPS_PER_REVOLUTION);
+	// If the current rpm is less than desired rpm increase by 100
+	if( rpm < stepperRPM.value() )	{
+		rpm+=rampingSpeed.value();
+		myStepper.setSpeed(rpm);
+		Serial.print("clockwise,rpm: ");
+		Serial.println(rpm);
+	}
+	if( rpm > stepperRPM.value() )	{
+		rpm = stepperRPM.value();
+	}
+	// Don't run if rpm is 0, will cause program to hang
+	if( stepperRPM.value() != 0 )	{
+		myStepper.step(STEPS_PER_REVOLUTION);
+	}
 }
 
 
 //********************
 // Auxiliary functions
 //********************
+
+/*
+ *	Central connected event handler
+ *	Adds notification that there was a connection to the serial port. Occurs if DEBUG is true. 
+ *	Connect Arduino to usb port, open Arduino IDE, and open serial monitoring to receive the data.
+ */
 void blePeripheralConnectHandler(BLECentral& central) {
-  // central connected event handler
-  if(DEBUG) {
-	  Serial.print("Connected event, central: ");
-	  Serial.println(central.address());
-  }
+	if(DEBUG) {
+		Serial.print("Connected event, central: ");
+		Serial.println(central.address());
+	}
 }
 
+/*
+ *	Central disconnected event handler
+ *	Adds notification that there was a disconnection to the serial port. Occurs if DEBUG is true. 
+ *	Connect Arduino to usb port, open Arduino IDE, and open serial monitoring to receive the data.
+ */
 void blePeripheralDisconnectHandler(BLECentral& central) {
-  // central disconnected event handler
-  if(DEBUG) {
-	  Serial.print("Disconnected event, central: ");
-	  Serial.println(central.address());
-  }
+	if(DEBUG) {
+		Serial.print("Disconnected event, central: ");
+		Serial.println(central.address());
+	}
 }
 
+/*
+ *	Central wrote new value to characteristic 
+ *	
+ */
 void stepperRPMWritten(BLECentral& central, BLECharacteristic& characteristic) {
-  // central wrote new value to characteristic, update LED
-  Serial.print("Characteristic event, written: ");
-  
-  if(stepperRPM.value() > MAXIMUM_RPM){
-	char* buffTemplate
-    char* buff = (char*) malloc(sizeof(char)*100);
-    sprintf(buff,"RPM entered is greater than maximum allowed. (Max RPM = %d)",MAXIMUM_RPM);
-    Serial.println(buff);
-    stepperRPM.setValue(0);
-  }
-  else
-    rpm=0; 
+	Serial.print("Characteristic event, written: ");
+
+	if( stepperRPM.value() > MAXIMUM_RPM ){
+		char* buffTemplate
+		char* buff = (char*) malloc(sizeof(char)*100);
+		sprintf(buff,"RPM entered is greater than maximum allowed. (Max RPM = %d)",MAXIMUM_RPM);
+		Serial.println(buff);
+		stepperRPM.setValue(0);
+	}
+	else {
+		rpm=0; 
+	}
 }
