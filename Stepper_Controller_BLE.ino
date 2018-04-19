@@ -14,7 +14,7 @@
 *
 * 	NOTES :
 *       - Uses the Curie Bluetooth Low-Energy library for bluetooth connection.
-*		- We used nRF Connect from Nordic Semiconductor on Android appliction in order to send and recieve commands.
+*		    - We used nRF Connect from Nordic Semiconductor on Android appliction in order to send and recieve commands.
 *
 *
 * 	AUTHOR :    Brandon Artner        START DATE :    June 2017
@@ -30,34 +30,36 @@
 #include <CurieBLE.h>
 
 #define DEBUG true 	// Display BTSerial messages on Serial Monitor
-#define MAXIMUM_RPM 1200; 	// Maximum rpm of the motor, our motor shut off if set to a higher speed
-#define STEPS_PER_REVOLUTION 200;  	// change this to fit the number of steps per revolution for your motor
+#define MAXIMUM_RPM 1200 	// Maximum rpm of the motor, our motor shut off if set to a higher speed
+#define STEPS_PER_REVOLUTION 200  	// change this to fit the number of steps per revolution for your motor
 
 BLEPeripheral blePeripheral; // create BLE peripheral instance
 
 BLEService stepperService("19B10000-E8F2-537E-4F6C-D104768A1214"); // create BLE service
 
-// create characteristic for stepper rpm and allow remote device to read and write
-// The UUID is pretty arbitrary, the first part is the device id though
-BLEIntCharacteristic stepperRPM("19B10001-E8F2-537E-4F6C-D104768A1215", BLERead | BLEWrite);
+// create characteristic for job data and allow remote device to read and write
 
-// create characteristic for the ramping speed and allow remote device to read and write
+	// Data should be in the following bit pattern
+	//		xxxx xxxx xxxx | yyyy yyyy yyyy | zzzz zzzz
+	// where, 
+	// 	x is the final desired rpm
+	// 	y is the desired run duration
+	// 	z is the desired ramping period duration
+	
 // The UUID is pretty arbitrary, the first part is the device id though
-BLEIntCharacteristic rampingSpeed("19B10002-E8F2-537E-4F6C-D104768A1215", BLERead | BLEWrite);
+BLEIntCharacteristic jobData("19B10001-E8F2-537E-4F6C-D104768A1215", BLERead | BLEWrite);
+
 
 // initialize the stepper library on pins 8 through 11:
 Stepper myStepper(STEPS_PER_REVOLUTION, 8, 9, 10, 11);	
 
-// Not exactly rpm, depends on how many steps per rotation is set at. If set to the motor's specs then it is true rpms.
-int rpm = 0;
 
 
 //**************
 // Arduino Setup
 //**************
 void setup()
-{
-  
+{ 
 	// initialize the speed at 0 rpm
 	myStepper.setSpeed(0);
 
@@ -71,22 +73,17 @@ void setup()
 
 	// add service and characteristic
 	blePeripheral.addAttribute(stepperService);
-	blePeripheral.addAttribute(stepperRPM);
-	blePeripheral.addAttribute(rampingSpeed);
+	blePeripheral.addAttribute(jobData);
 
 	// assign event handlers for connected, disconnected to peripheral
 	blePeripheral.setEventHandler(BLEConnected, blePeripheralConnectHandler);
 	blePeripheral.setEventHandler(BLEDisconnected, blePeripheralDisconnectHandler);
 
 	// assign event handlers for characteristic
-	stepperRPM.setEventHandler(BLEWritten, stepperRPMWritten);
-
-	// assign event handlers for characteristic
-	stepperRPM.setEventHandler(BLEWritten, stepperRPMWritten);
+	jobData.setEventHandler(BLEWritten, jobDataWritten);
 
 	// set an initial value for the characteristic
-	stepperRPM.setValue(0);
-	rampingSpeed.setValue(100);
+	jobData.setValue(0);
 
 	// advertise the service
 	blePeripheral.begin();
@@ -99,21 +96,7 @@ void setup()
 void loop() {
 	// poll peripheral
 	blePeripheral.poll();
-
-	// If the current rpm is less than desired rpm increase by 100
-	if( rpm < stepperRPM.value() )	{
-		rpm+=rampingSpeed.value();
-		myStepper.setSpeed(rpm);
-		Serial.print("clockwise,rpm: ");
-		Serial.println(rpm);
-	}
-	if( rpm > stepperRPM.value() )	{
-		rpm = stepperRPM.value();
-	}
-	// Don't run if rpm is 0, will cause program to hang
-	if( stepperRPM.value() != 0 )	{
-		myStepper.step(STEPS_PER_REVOLUTION);
-	}
+	
 }
 
 
@@ -146,20 +129,83 @@ void blePeripheralDisconnectHandler(BLECentral& central) {
 }
 
 /*
- *	Central wrote new value to characteristic 
+ *	Central wrote new value to characteristic
  *	
  */
-void stepperRPMWritten(BLECentral& central, BLECharacteristic& characteristic) {
+void jobDataWritten(BLECentral& central, BLECharacteristic& characteristic) {
 	Serial.print("Characteristic event, written: ");
+	// Declare variable: 
+	//		fRPM: Final desired rpm
+	//		t: Time elapsed
+	//		rampDur: Duration of the ramping period
+	//		runDur: Duration of the run 
+	//		curRPM: Current rpm for the ramping period
+	//		w: Angular acceleration	
+  //    d_t: Time step
+  //    runRotations: Number of rotations to 
+	int fRPM, rampDur, runDur;
+	float curRPM, w, t, d_t, runRotations;
 
-	if( stepperRPM.value() > MAXIMUM_RPM ){
-		char* buffTemplate
+  if(DEBUG)
+    Serial.println(jobData.value());
+	
+	curRPM = 0;
+  d_t = 0.1;
+	
+	// Incoming data should be in the following bit pattern
+	//		xxxx xxxx xxxx | yyyy yyyy yyyy | zzzz zzzz
+	// where, 
+	// 	x is the final desired rpm
+	// 	y is the desired run duration
+	// 	z is the desired ramping period duration
+	fRPM = (jobData.value() & 0xfff00000) >> 20;
+	runDur = (jobData.value() & 0x000fff00) >> 8;
+	rampDur = (jobData.value() & 0x000000ff);
+
+  if(DEBUG) {
+    Serial.print("RPM: ");
+    Serial.println(fRPM);
+    Serial.print("Run Duration: ");
+    Serial.println(runDur);
+    Serial.print("Ramp Duration: ");
+    Serial.println(rampDur);
+  }
+  
+	// Check that desired rom is with in bounds
+	if( fRPM > MAXIMUM_RPM ){
+		//char* buffTemplate;
 		char* buff = (char*) malloc(sizeof(char)*100);
 		sprintf(buff,"RPM entered is greater than maximum allowed. (Max RPM = %d)",MAXIMUM_RPM);
 		Serial.println(buff);
-		stepperRPM.setValue(0);
+		jobData.setValue(0);
 	}
 	else {
-		rpm=0; 
+		
+		w = fRPM/rampDur; // Calculate angular acceleration
+		t = 1;
+    
+		// Ramping Period
+		while(t <= rampDur){
+			// Update RPM using angular acceleration 
+			curRPM = min(w*t, fRPM);
+			myStepper.setSpeed(curRPM);
+     
+      if(DEBUG)
+        Serial.println(curRPM);
+      
+      runRotations = (curRPM * d_t)/60;
+			myStepper.step(round(STEPS_PER_REVOLUTION*runRotations));
+			t+=d_t;
+		}
+		
+    if(DEBUG)
+        Serial.println(curRPM);
+        
+    runRotations = (fRPM*runDur)/60;
+
+    // Run Period
+		myStepper.step(round(STEPS_PER_REVOLUTION*runRotations));
+
 	}
+	myStepper.setSpeed(0);
 }
